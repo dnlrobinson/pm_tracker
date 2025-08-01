@@ -18,7 +18,6 @@ Example ``.streamlit/secrets.toml`` content::
 Run the app with ``streamlit run app.py``.  This file should live in the
 root of your Streamlit project.
 """
-#this is hardd...
 
 from __future__ import annotations
 
@@ -123,6 +122,56 @@ def _ensure_openai_client() -> bool:
     return True
 
 
+def _call_chat_completion(messages: List[Dict[str, Any]], model: str, temperature: float) -> Any:
+    """Call the OpenAI chat completion endpoint with backwards compatibility.
+
+    The openai Python package changed its API significantly starting from
+    version 1.0.0.  This helper attempts to detect the installed version and
+    uses the appropriate client interface.  It returns the full response
+    object from the API call.
+
+    Parameters
+    ----------
+    messages : list of dict
+        The chat messages to send.  Each dictionary must have ``role`` and
+        ``content`` keys.
+    model : str
+        The model name (e.g. "gpt-3.5-turbo").
+    temperature : float
+        The sampling temperature to use.
+
+    Returns
+    -------
+    Any
+        The API response object.  Raises the exception from the OpenAI
+        library if the call fails.
+    """
+    # Newer openai-python (>=1.0) exposes the client via openai.OpenAI
+    # and the chat completion at client.chat.completions.create.  Older
+    # versions expose openai.ChatCompletion.create.  We detect the
+    # attribute to decide which path to follow.
+    if not _ensure_openai_client():
+        raise RuntimeError("OpenAI client is not configured.")
+    # If the legacy interface exists, use it
+    if hasattr(openai, "ChatCompletion"):
+        return openai.ChatCompletion.create(
+            model=model,
+            messages=messages,
+            temperature=temperature,
+        )
+    # Otherwise use the new OpenAI client interface
+    # We cannot reuse st.secrets retrieval here because _ensure_openai_client
+    # already set openai.api_key when possible.  For openai>=1.0, we need
+    # to instantiate an explicit client with the API key.
+    api_key = st.secrets.get("OPENAI_API_KEY")
+    client = openai.OpenAI(api_key=api_key)
+    return client.chat.completions.create(
+        model=model,
+        messages=messages,
+        temperature=temperature,
+    )
+
+
 def _generate_summary(scope: str, schedule: str, updates: str) -> str:
     """Generate a summary of the project status using the OpenAI API.
 
@@ -166,12 +215,16 @@ def _generate_summary(scope: str, schedule: str, updates: str) -> str:
         {"role": "user", "content": summarization_prompt},
     ]
     try:
-        response = openai.ChatCompletion.create(
-            model="gpt-3.5-turbo",
-            messages=messages,
-            temperature=0.3,
-        )
-        return response["choices"][0]["message"]["content"].strip()
+        response = _call_chat_completion(messages, model="gpt-3.5-turbo", temperature=0.3)
+        # Both the legacy and new APIs return an object with similar structure;
+        # unify the access pattern.
+        if hasattr(response, "choices"):
+            # Legacy or dataclass response
+            content = response.choices[0].message.content
+        else:
+            # Unexpected structure; fallback to original indexer
+            content = response["choices"][0]["message"]["content"]
+        return content.strip()
     except Exception as exc:  # pragma: no cover
         st.error(f"Error generating summary: {exc}")
         return ""
@@ -215,12 +268,12 @@ def _generate_chat_reply(messages: List[Dict[str, str]], scope: str, schedule: s
     # Append the conversation history
     conversation.extend(messages)
     try:
-        response = openai.ChatCompletion.create(
-            model="gpt-3.5-turbo",
-            messages=conversation,
-            temperature=0.4,
-        )
-        return response["choices"][0]["message"]["content"].strip()
+        response = _call_chat_completion(conversation, model="gpt-3.5-turbo", temperature=0.4)
+        if hasattr(response, "choices"):
+            reply_content = response.choices[0].message.content
+        else:
+            reply_content = response["choices"][0]["message"]["content"]
+        return reply_content.strip()
     except Exception as exc:  # pragma: no cover
         st.error(f"Error during chat completion: {exc}")
         return ""
