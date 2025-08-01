@@ -18,7 +18,6 @@ Example ``.streamlit/secrets.toml`` content::
 Run the app with ``streamlit run app.py``.  This file should live in the
 root of your Streamlit project.
 """
-#hard?
 
 from __future__ import annotations
 
@@ -153,20 +152,19 @@ def _call_chat_completion(messages: List[Dict[str, Any]], model: str, temperatur
     # attribute to decide which path to follow.
     if not _ensure_openai_client():
         raise RuntimeError("OpenAI client is not configured.")
-    # If the legacy interface exists, use it
-    if hasattr(openai, "ChatCompletion"):
-        return openai.ChatCompletion.create(
+    # Newer versions of openai-python (>=1.0.0) expose the ``OpenAI``
+    # client class, while older versions do not.  Prefer the new
+    # client API when available.
+    if hasattr(openai, "OpenAI"):
+        api_key = st.secrets.get("OPENAI_API_KEY")
+        client = openai.OpenAI(api_key=api_key)
+        return client.chat.completions.create(
             model=model,
             messages=messages,
             temperature=temperature,
         )
-    # Otherwise use the new OpenAI client interface
-    # We cannot reuse st.secrets retrieval here because _ensure_openai_client
-    # already set openai.api_key when possible.  For openai>=1.0, we need
-    # to instantiate an explicit client with the API key.
-    api_key = st.secrets.get("OPENAI_API_KEY")
-    client = openai.OpenAI(api_key=api_key)
-    return client.chat.completions.create(
+    # Fallback for legacy (<1.0) openai-python
+    return openai.ChatCompletion.create(
         model=model,
         messages=messages,
         temperature=temperature,
