@@ -1,0 +1,9 @@
+
+# Required Python packages for the project management Streamlit app
+#
+# Streamlit Cloud will install all of the packages listed here when
+# deploying your app.  Be sure to update versions as necessary.
+
+streamlit>=1.25
+openai>=1.0
+pymupdf>=1.21
