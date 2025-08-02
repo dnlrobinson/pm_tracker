@@ -108,7 +108,10 @@ Return updated summary as JSON only.
         content = response.choices[0].message.content if hasattr(response, "choices") else response["choices"][0]["message"]["content"]
         updated = json.loads(content)
         st.session_state.summary_state = updated
-        st.session_state.progress = "\n\n".join(f"**{k}**: {v}" for k, v in updated.items())
+        # Clean and readable output
+        def sanitize(text):
+            return text.replace("\n", " ").strip()
+        st.session_state.progress = "\n\n".join(f"**{k}**: {sanitize(v)}" for k, v in updated.items())
     except Exception as e:
         st.warning(f"Could not update summary: {e}")
 
@@ -131,12 +134,11 @@ def _generate_chat_reply(messages: List[Dict[str, str]], context: str) -> str:
 def main():
     st.set_page_config(page_title="Project Assistant", layout="wide")
     st.title("📋 Project Management Assistant")
-    st.markdown("Upload scope/schedule documents and chat to maintain a dynamic summary.")
+    st.markdown("Upload project-related documents and chat to maintain a dynamic summary.")
 
     for k, v in [
         ("messages", []),
-        ("scope_text", ""),
-        ("schedule_text", ""),
+        ("uploaded_files", []),
         ("progress", ""),
         ("summary_state", {}),
     ]:
@@ -146,20 +148,22 @@ def main():
     col1, col2 = st.columns([1, 1], gap="large")
 
     with col1:
-        st.subheader("Upload Documents")
-        scope = st.file_uploader("Project Scope", type=["pdf", "txt", "md", "csv", "json", "yaml", "yml"])
-        if scope:
-            st.session_state.scope_text = _read_uploaded_file(scope)
-            st.success("Scope uploaded.")
-            _rewrite_summary_state_with_gpt(st.session_state.scope_text)
+        st.subheader("📁 Upload Files")
+        uploads = st.file_uploader("Drop project files (scope, schedule, notes, etc.)", type=["pdf", "txt", "md", "csv", "json", "yaml", "yml"], accept_multiple_files=True)
+        if uploads:
+            for file in uploads:
+                text = _read_uploaded_file(file)
+                if text:
+                    st.session_state.uploaded_files.append((file.name, text))
+                    _rewrite_summary_state_with_gpt(text)
+            st.success(f"Uploaded {len(uploads)} file(s).")
 
-        sched = st.file_uploader("Project Schedule", type=["pdf", "txt", "md", "csv", "json", "yaml", "yml"])
-        if sched:
-            st.session_state.schedule_text = _read_uploaded_file(sched)
-            st.success("Schedule uploaded.")
-            _rewrite_summary_state_with_gpt(st.session_state.schedule_text)
+        if st.session_state.uploaded_files:
+            st.markdown("#### Files Received:")
+            for fname, _ in st.session_state.uploaded_files:
+                st.markdown(f"- {fname}")
 
-        st.subheader("Chat with the Assistant")
+        st.subheader("💬 Chat with the Assistant")
         for msg in st.session_state.messages:
             with st.chat_message(msg["role"]):
                 st.markdown(msg["content"])
@@ -169,16 +173,14 @@ def main():
             st.session_state.messages.append({"role": "user", "content": user_input})
             _rewrite_summary_state_with_gpt(user_input)
 
-            reply = _generate_chat_reply(
-                messages=st.session_state.messages,
-                context=st.session_state.scope_text + "\n" + st.session_state.schedule_text,
-            )
+            context = "\n\n".join([t for _, t in st.session_state.uploaded_files])
+            reply = _generate_chat_reply(messages=st.session_state.messages, context=context)
             if reply:
                 st.session_state.messages.append({"role": "assistant", "content": reply})
                 _rewrite_summary_state_with_gpt(reply)
 
     with col2:
-        st.subheader("Progress Summary")
+        st.subheader("📌 Progress Summary")
         if st.session_state.progress:
             st.markdown(st.session_state.progress)
         else:
