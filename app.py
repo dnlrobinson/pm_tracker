@@ -51,7 +51,7 @@ def _ensure_openai_client() -> bool:
     return True
 
 
-def _call_chat_completion(messages: List[Dict[str, Any]], model: str = "gpt-4", temperature: float = 0.3) -> Any:
+def _call_chat_completion(messages: List[Dict[str, Any]], model: str = "gpt-4.1", temperature: float = 0.3) -> Any:
     if not _ensure_openai_client():
         raise RuntimeError("OpenAI client is not ready.")
     if hasattr(openai, "OpenAI"):
