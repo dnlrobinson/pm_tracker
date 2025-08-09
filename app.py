@@ -85,35 +85,106 @@ def _read_uploaded_file(uploaded_file: Any) -> str:
 
 
 def _rewrite_summary_state_with_gpt(context: str) -> None:
+    """
+    Calls the model to rewrite the structured summary JSON in session state,
+    then renders a readable Markdown progress summary. Robust to dicts/lists.
+    """
+    import re
+
     instructions = (
-        "You are a project assistant. Maintain a structured project summary in JSON. "
-        "Rewrite or remove sections as appropriate based on the context."
+        "You are a project assistant. Maintain a concise, structured project summary as JSON. "
+        "Update, merge, or remove sections as appropriate based on the provided context. "
+        "Keep keys stable when possible (e.g., goals, milestones, risks, blockers, decisions, next_steps). "
+        "Return JSON only—no prose, no code fences."
     )
-    prev = st.session_state.summary_state
+
+    previous = st.session_state.get("summary_state", {}) or {}
+
     prompt = f"""
 Current summary (JSON):
-{json.dumps(prev, indent=2)}
+{json.dumps(previous, ensure_ascii=False, indent=2)}
 
 Context:
 {context}
 
-Return updated summary as JSON only.
+Return ONLY the updated summary as valid JSON (object). No commentary.
 """
+
     messages = [
         {"role": "system", "content": instructions},
         {"role": "user", "content": prompt},
     ]
+
+    # --- Call model and parse JSON safely ---
     try:
         response = _call_chat_completion(messages)
-        content = response.choices[0].message.content if hasattr(response, "choices") else response["choices"][0]["message"]["content"]
+        # Handle both possible SDK shapes
+        if hasattr(response, "choices"):
+            content = response.choices[0].message.content
+        else:
+            content = response["choices"][0]["message"]["content"]
+        content = (content or "").strip()
+
+        # If the model included code fences or extra text, try to extract the JSON object
+        # by grabbing the largest {...} block.
+        match = re.search(r"\{[\s\S]*\}", content)
+        if match:
+            content = match.group(0)
+
         updated = json.loads(content)
-        st.session_state.summary_state = updated
-        # Clean and readable output
-        def sanitize(text):
-            return text.replace("\n", " ").strip()
-        st.session_state.progress = "\n\n".join(f"**{k}**: {sanitize(v)}" for k, v in updated.items())
+        if not isinstance(updated, dict):
+            raise ValueError("Model returned JSON that is not an object.")
     except Exception as e:
         st.warning(f"Could not update summary: {e}")
+        return
+
+    # --- Save structured state ---
+    st.session_state.summary_state = updated
+
+    # --- Render Markdown summary robustly (handles dicts/lists/values, recursively) ---
+    def to_text(value: Any) -> str:
+        """Convert any value to a single-line string."""
+        if value is None:
+            return ""
+        if isinstance(value, (str, int, float, bool)):
+            return str(value)
+        try:
+            # Compact JSON for nested structures
+            return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+        except Exception:
+            return str(value)
+
+    def sanitize(s: str) -> str:
+        return s.replace("\n", " ").strip()
+
+    def render_markdown(value: Any, level: int = 0) -> list[str]:
+        """Recursively render dict/list/value to a list of Markdown lines."""
+        lines: list[str] = []
+        indent = "  " * max(level, 0)
+
+        if isinstance(value, dict):
+            for k, v in value.items():
+                if isinstance(v, (dict, list)):
+                    # Key as bold section header
+                    lines.append(f"{indent}**{k}**")
+                    lines.extend(render_markdown(v, level + 1))
+                else:
+                    lines.append(f"{indent}**{k}**: {sanitize(to_text(v))}")
+        elif isinstance(value, list):
+            for item in value:
+                if isinstance(item, (dict, list)):
+                    lines.append(f"{indent}-")
+                    lines.extend(render_markdown(item, level + 1))
+                else:
+                    lines.append(f"{indent}- {sanitize(to_text(item))}")
+        else:
+            lines.append(f"{indent}{sanitize(to_text(value))}")
+
+        return lines
+
+    md_lines = render_markdown(updated, level=0)
+    st.session_state.progress = "\n".join(md_lines) if md_lines else ""
+
 
 
 def _generate_chat_reply(messages: List[Dict[str, str]], context: str) -> str:
